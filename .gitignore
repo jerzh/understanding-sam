@@ -26,3 +26,9 @@ models/
 models_simple/
 deltas/
 nohup.out
+
+
+# NOTE(jeremy): my stuff starts here
+tags
+venv
+__pycache__

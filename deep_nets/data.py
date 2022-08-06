@@ -95,7 +95,7 @@ def asym_label_noise(dataset, label):
 
 def get_loaders(dataset, n_ex, batch_size, split, shuffle, data_augm, val_indices=None, p_label_noise=0.0,
                 noise_type='sym', drop_last=False):
-    dir_ = '/tmlscratch/andriush/data'  
+    dir_ = '/tmlscratch/andriush/data'
     # dir_ = '/tmldata1/andriush/data'
     dataset_f = datasets_dict[dataset]
     batch_size = n_ex if n_ex < batch_size and n_ex != -1 else batch_size
@@ -165,6 +165,7 @@ def get_loaders(dataset, n_ex, batch_size, split, shuffle, data_augm, val_indice
             data.label_noise[indices] = True
         print(data.data.shape)
         data = DatasetWithLabelNoise(data, split, transform if dataset != 'gaussians_binary' else None)
+        # TODO(jeremy): Adapt to FFCV
         loader = torch.utils.data.DataLoader(
             dataset=data, batch_size=batch_size, shuffle=shuffle, pin_memory=True,
             num_workers=num_workers_train if split == 'train' else num_workers_val, drop_last=drop_last)
@@ -191,6 +192,7 @@ def get_loaders(dataset, n_ex, batch_size, split, shuffle, data_augm, val_indice
 
         data.label_noise = np.zeros(n_ex)
         data = DatasetWithLabelNoise(data, split, transform if dataset != 'gaussians_binary' else None)
+        # TODO(jeremy): Adapt to FFCV
         loader = torch.utils.data.DataLoader(dataset=data, batch_size=batch_size, shuffle=shuffle, pin_memory=True,
                                              num_workers=num_workers_test, drop_last=drop_last)
 
@@ -200,6 +202,7 @@ def get_loaders(dataset, n_ex, batch_size, split, shuffle, data_augm, val_indice
     return loader
 
 
+# TODO(jeremy): Adapt to FFCV
 def create_loader(x, y, ln, n_ex, batch_size, shuffle, drop_last):
     if n_ex > 0:
         x, y, ln = x[:n_ex], y[:n_ex], ln[:n_ex]
@@ -256,4 +259,3 @@ classes_dict = {'cifar10': {0: 'airplane',
                             9: 'truck',
                             }
                 }
-

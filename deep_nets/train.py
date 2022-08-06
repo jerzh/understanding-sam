@@ -124,7 +124,7 @@ def main():
     print('GPU memory available: {:.2f} GB'.format(torch.cuda.get_device_properties('cuda').total_memory / 10**9))
     cur_timestamp = str(datetime.now())[:-3]  # include also ms to prevent the probability of name collision
     model_name = '{} dataset={} model={} epochs={} lr_max={} model_width={} l2_reg={} sam_rho={} batch_size={} acc_steps={} frac_train={} p_label_noise={} seed={}'.format(
-        cur_timestamp, args.dataset, args.model, args.epochs, args.lr_max, args.model_width, args.l2_reg, 
+        cur_timestamp, args.dataset, args.model, args.epochs, args.lr_max, args.model_width, args.l2_reg,
         args.sam_rho, args.batch_size, args.acc_steps, args.frac_train, args.p_label_noise, args.seed)
     logger = utils.configure_logger(model_name, args.debug)
     logger.info(args)
@@ -156,6 +156,7 @@ def main():
     else:
         n_steps_pgd_curr, step_size_pgd_curr = args.pgd_train_n_iters, args.pgd_alpha_train  # otherwise these values are fixed
 
+    # Get dataloaders
     val_indices = np.random.permutation(data.shapes_dict[args.dataset][0])[:n_val]
     train_data_augm = False if args.no_data_augm or args.model == 'linear' or args.dataset in ['mnist', 'mnist_binary', 'gaussians_binary'] else True
     train_batches = data.get_loaders(args.dataset, n_train, args.batch_size, split='train', val_indices=val_indices, shuffle=True, data_augm=train_data_augm, p_label_noise=args.p_label_noise, noise_type=args.noise_type, drop_last=True)
@@ -210,6 +211,8 @@ def main():
     train_obj, train_reg, train_n_ln, train_n_clean, train_err_ln = 0, 0, 0, 0, 0
     margin_clean, margin_ln, l2_norm_w = 0, 0, 0
     x_prev, y_prev = torch.zeros([args.batch_size, 3, 32, 32]).cuda(), torch.zeros(args.batch_size, dtype=torch.int64).cuda()  # only for the very first iteration
+
+    # Start of training loop
     for epoch in range(args.epochs + 1):
         if epoch == int(args.epoch_rm_noise * args.epochs):
             train_batches = data.get_loaders(args.dataset, -1, args.batch_size, split='train', shuffle=False,
@@ -236,6 +239,7 @@ def main():
 
         model = model.eval() if epoch == 0 else model.train()  # epoch=0 is eval only
 
+        # Dataloading
         for i, (x, x_paired, y, _, ln) in enumerate(train_batches):
             if epoch == 0 and i > 0:  # epoch=0 runs only for one iteration (to check the training stats at init)
                 break
@@ -264,7 +268,7 @@ def main():
                     delta.requires_grad = True
 
                 with torch.cuda.amp.autocast(enabled=model.half_prec):
-                    logits = model(x + delta) 
+                    logits = model(x + delta)
                     if per_example_weights is None:
                         obj = loss_f(logits, y)
                     else:
@@ -273,7 +277,7 @@ def main():
                 if args.clean_loss_coeff > 0.0:  # 50% clean and 50% adv, but the coefficient may vary
                     assert args.attack != 'none'  # none => same as normal training with a larger batch size (not supposed usage)
                     with torch.cuda.amp.autocast(enabled=model.half_prec):
-                        obj += args.clean_loss_coeff * loss_f(model(x), y) 
+                        obj += args.clean_loss_coeff * loss_f(model(x), y)
 
                 reg = torch.zeros(1).cuda()[0]
                 model_params = list(model.named_parameters())
@@ -298,6 +302,8 @@ def main():
 
             accum_grad_dict = defaultdict(lambda: 0)  # dict for gradient accumulation
             acc_batch_size = args.batch_size // args.acc_steps
+
+            # Step weights towards increasing loss (to measure sharpness)
             for acc_step in range(args.acc_steps):
                 batch_start, batch_end = acc_step * acc_batch_size, (acc_step + 1) * acc_batch_size
                 x_curr, y_curr = x[batch_start:batch_end], y[batch_start:batch_end]
@@ -314,7 +320,7 @@ def main():
                         x_curr_sam, y_curr_sam = x_curr, y_curr
                     fp_loss_sam = lambda model: fp_loss_reg(x_curr_sam, y_curr_sam, delta_curr, bn_stats=not args.freeze_bn_stats)[0]
                     sam_delta_dict = perturb_weights_sam(model, fp_loss_sam, rho_actual, rho_actual*args.sam_step_size_mult, args.sam_iters, args.sam_no_grad_norm)
-                    
+
                     obj, reg, delta_curr, logits = fp_loss_reg(x_curr, y_curr, delta_curr, bn_stats=not args.freeze_bn_stats)
                     scaler.scale(obj).backward()
                     utils_train.subtract_weight_delta(model, sam_delta_dict)  # return back to `w_t` after computing the gradient at `w_t + delta_t`
@@ -395,7 +401,7 @@ def main():
                 # Note 1: for computing sharpness, the large rho means the same as during training (except if it's ERM, then it's fixed to 0.1)
                 # Note 2: `train_batches_fast` contains samples *without* augmentations to prevent any stochasticity over different sharpness computations
                 sam_rho_small, sam_rho_large = 0.01, args.sam_rho if args.sam_rho > 0.0 else 0.1
-                train_err, train_loss, _ = utils_eval.rob_err(train_batches_fast, model, eps, pgd_alpha, scaler, 0, 0, loss_f=loss_f) 
+                train_err, train_loss, _ = utils_eval.rob_err(train_batches_fast, model, eps, pgd_alpha, scaler, 0, 0, loss_f=loss_f)
                 sharpness_loss_small_fast, sharpness_err_small_fast, _ = utils_eval.eval_sharpness(model, train_batches_fast, loss_f, sam_rho_small, 1.0, 1, 1, 'all', rand_init=False)
                 sharpness_loss_small_slow, sharpness_err_small_slow = 0.0, 0.0
                 # sharpness_loss_small_slow, sharpness_err_small_slow, _ = utils_eval.eval_sharpness(model, train_batches_fast, loss_f, sam_rho_small, 0.1, 100, 1, 'all', rand_init=False)
@@ -405,7 +411,7 @@ def main():
                 max_loss_small_fast, max_loss_small_slow = sharpness_loss_small_fast + train_loss, sharpness_loss_small_slow + train_loss
                 max_err_small_fast, max_err_small_slow = sharpness_err_small_fast + train_err, sharpness_err_small_slow + train_err
                 max_loss_large_fast, max_loss_large_slow = sharpness_loss_large_fast + train_loss, sharpness_loss_large_slow + train_loss
-                max_err_large_fast, max_err_large_slow = sharpness_err_large_fast + train_err, sharpness_err_large_slow + train_err 
+                max_err_large_fast, max_err_large_slow = sharpness_err_large_fast + train_err, sharpness_err_large_slow + train_err
 
                 val_err, _, _ = utils_eval.rob_err(val_batches, model, eps, pgd_alpha, scaler, 0, 0, loss_f=loss_f)
                 val_err_swa, _, _ = utils_eval.rob_err(val_batches, model_swa, eps, pgd_alpha, scaler, 0, 0, loss_f=loss_f)
@@ -422,6 +428,7 @@ def main():
                 test_err_swa, _, _ = utils_eval.rob_err(test_batches, model_swa, eps, pgd_alpha, scaler, 0, 0, loss_f=loss_f)
                 test_err_c10c = 0.0
 
+                # Log a bunch of stuff
                 time_elapsed = time.time() - start_time
                 linear_str = '|w|_2 {:.2f} margin_clean {:.2f}'.format(l2_norm_w, margin_clean) if args.model == 'linear' else ''
                 train_str = '[train] obj {:.3f} reg {:.3f} loss {:.4f}/{:.4f} err_clean {:.2%} err_ln {:.2%} {}'.format(
@@ -432,14 +439,16 @@ def main():
                 # cos_str = 'cos {:.3f}-{:.3f}'.format(cos_grads_clean_all, cos_grads_clean_all_sam)
                 # norm_str = 'norm {:.3f}-{:.3f}-{:.3f}'.format(norm_grad_clean, norm_grad_all, norm_grad_all_sam)
                 sharpness_str = 'sharp {:.3f}-{:.3f} {:.3f}-{:.3f}'.format(sharpness_loss_small_fast, sharpness_loss_small_slow, sharpness_loss_large_fast, sharpness_loss_large_slow)
+
+                # Note the format: "epoch-iteration: train, test, val, robust(?), sharpness (time_train, time_total)"
                 logger.info('{}-{}: {}  {}  {}  {}  {} ({:.2f}m, {:.2f}m)'.format(
                     epoch, iteration, train_str, test_str, val_str, rob_str, sharpness_str, time_train/60, time_elapsed/60))
                 metr_vals = [epoch, iteration, train_obj, train_loss, train_reg, train_err_clean, train_err_ln,
                              train_err_pgd, test_err, test_loss, train_loss_swa, train_err_swa, val_err_swa,
                              test_err_swa, test_err_pgd, test_loss_pgd, train_loss_pgd, l2_norm_w,
-                             margin_clean, margin_ln, sharpness_rand_all, 
+                             margin_clean, margin_ln, sharpness_rand_all,
                              sharpness_loss_small_fast, sharpness_err_small_fast, sharpness_loss_small_slow, sharpness_err_small_slow,
-                             sharpness_loss_large_fast, sharpness_err_large_fast, sharpness_loss_large_slow, sharpness_err_large_slow, 
+                             sharpness_loss_large_fast, sharpness_err_large_fast, sharpness_loss_large_slow, sharpness_err_large_slow,
                              max_loss_small_fast, max_err_small_fast, max_loss_small_slow, max_err_small_slow,
                              max_loss_large_fast, max_err_large_fast, max_loss_large_slow, max_err_large_slow,
                              test_err_c10c, val_err, val_err_pgd, time_train, time_elapsed,
@@ -450,9 +459,9 @@ def main():
                               'train_err_ln', 'train_err_pgd', 'test_err', 'test_loss',
                               'train_loss_swa', 'train_err_swa', 'val_err_swa', 'test_err_swa',
                               'test_err_pgd', 'test_loss_pgd', 'train_loss_pgd',
-                              'l2_norm_w', 'margin_clean', 'margin_ln', 'sharpness_rand_all', 
+                              'l2_norm_w', 'margin_clean', 'margin_ln', 'sharpness_rand_all',
                               'sharpness_loss_small_fast', 'sharpness_err_small_fast', 'sharpness_loss_small_slow', 'sharpness_err_small_slow',
-                              'sharpness_loss_large_fast', 'sharpness_err_large_fast', 'sharpness_loss_large_slow', 'sharpness_err_large_slow', 
+                              'sharpness_loss_large_fast', 'sharpness_err_large_fast', 'sharpness_loss_large_slow', 'sharpness_err_large_slow',
                               'max_loss_small_fast', 'max_err_small_fast', 'max_loss_small_slow', 'max_err_small_slow',
                               'max_loss_large_fast', 'max_err_large_fast', 'max_loss_large_slow', 'max_err_large_slow',
                               'test_err_c10c', 'val_err', 'val_err_pgd', 'time_train', 'time_elapsed',
