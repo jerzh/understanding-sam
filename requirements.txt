@@ -1,4 +1,0 @@
-# TODO(jeremy): Figure out ffcv installation
-torch
-torchvision
-git+https://github.com/RobustBench/robustbench.git
