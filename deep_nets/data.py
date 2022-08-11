@@ -1,4 +1,9 @@
 import os
+
+from ffcv.fields import IntField, RGBImageField
+from ffcv.fields.decoders import IntFieldDecoder, RGBImageFieldDecoder
+from ffcv.loader import Loader, OrderOption
+from ffcv.writer import DatasetWriter
 import torch
 import torch.utils.data as td
 import numpy as np
@@ -93,6 +98,23 @@ def asym_label_noise(dataset, label):
         raise ValueError('This dataset does not yet support asymmetric label noise.')
 
 
+def write_to_ffcv_format(dataset_str, ffcv_dataset_dir, val_indices):
+    # Temp dir for downloading original dataset
+    dir_ = '/tmlscratch/andriush/data'  # TODO(jeremy): Use tempfile?
+    writer = DatasetWriter(
+        fname=os.path.join(ffcv_dataset_dir, f'{dataset_str}.beton'),
+        # TODO(jeremy): Generalize this
+        fields={
+            'image': RGBImageField(),
+            'label': IntField(),
+        },
+        num_workers=16
+    )
+    dataset_f = datasets_dict[dataset_str]
+    data = dataset_f(dir_, train=True, download=True)
+    writer.from_indexed_dataset(data)
+
+
 def get_loaders(dataset, n_ex, batch_size, split, shuffle, data_augm, val_indices=None, p_label_noise=0.0,
                 noise_type='sym', drop_last=False):
     dir_ = '/tmlscratch/andriush/data'
@@ -163,9 +185,11 @@ def get_loaders(dataset, n_ex, batch_size, split, shuffle, data_augm, val_indice
                 else:
                     data.targets[index] = asym_label_noise(dataset, data.targets[index])
             data.label_noise[indices] = True
-        print(data.data.shape)
+        # print(data.data.shape)
         data = DatasetWithLabelNoise(data, split, transform if dataset != 'gaussians_binary' else None)
         # TODO(jeremy): Adapt to FFCV
+        # I guess in theory I could just write the data to .beton here
+        # and then read it out immediately?
         loader = torch.utils.data.DataLoader(
             dataset=data, batch_size=batch_size, shuffle=shuffle, pin_memory=True,
             num_workers=num_workers_train if split == 'train' else num_workers_val, drop_last=drop_last)
