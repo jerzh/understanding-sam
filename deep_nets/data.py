@@ -93,10 +93,10 @@ def asym_label_noise(dataset, label):
         raise ValueError('This dataset does not yet support asymmetric label noise.')
 
 
-def get_loaders(dataset, n_ex, batch_size, split, shuffle, data_augm, val_indices=None, p_label_noise=0.0,
+def get_loaders(dataset, data_dir, n_ex, batch_size, split, shuffle, data_augm, val_indices=None, p_label_noise=0.0,
                 noise_type='sym', drop_last=False):
-    dir_ = '/tmlscratch/andriush/data'
-    # dir_ = '/tmldata1/andriush/data'
+    # set this via flag
+    dir_ = data_dir
     dataset_f = datasets_dict[dataset]
     batch_size = n_ex if n_ex < batch_size and n_ex != -1 else batch_size
     num_workers_train, num_workers_val, num_workers_test = 4, 4, 4

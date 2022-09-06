@@ -19,6 +19,7 @@ from sam import SAM, perturb_weights_sam
 
 def get_args():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--data_dir', type=str)
     parser.add_argument('--batch_size', default=128, type=int)
     parser.add_argument('--dataset', default='cifar10', choices=data.datasets_dict.keys(), type=str)
     parser.add_argument('--model', default='resnet18', choices=['vgg16', 'resnet18', 'resnet18_gn', 'resnet_tiny', 'resnet_tiny_gn', 'resnet34', 'resnet34preact', 'resnet34_gn', 'wrn28', 'lenet', 'cnn', 'fc', 'linear'], type=str)
@@ -159,11 +160,16 @@ def main():
     # Get dataloaders
     val_indices = np.random.permutation(data.shapes_dict[args.dataset][0])[:n_val]
     train_data_augm = False if args.no_data_augm or args.model == 'linear' or args.dataset in ['mnist', 'mnist_binary', 'gaussians_binary'] else True
-    train_batches = data.get_loaders(args.dataset, n_train, args.batch_size, split='train', val_indices=val_indices, shuffle=True, data_augm=train_data_augm, p_label_noise=args.p_label_noise, noise_type=args.noise_type, drop_last=True)
-    train_batches_fast = data.get_loaders(args.dataset, args.n_eval_every_k_iter, args.batch_size, split='train', val_indices=val_indices, shuffle=False, data_augm=False, p_label_noise=args.p_label_noise, noise_type=args.noise_type, drop_last=False)
-    val_batches = data.get_loaders(args.dataset, n_val, args.batch_size, split='val', val_indices=val_indices, shuffle=True, data_augm=False, p_label_noise=args.p_label_noise, noise_type=args.noise_type, drop_last=False)
-    test_batches = data.get_loaders(args.dataset, args.n_final_eval, args.batch_size_eval, split='test', shuffle=True, data_augm=False, noise_type=args.noise_type, drop_last=False)
-    test_batches_fast = data.get_loaders(args.dataset, args.n_eval_every_k_iter, args.batch_size_eval, split='test', shuffle=True, data_augm=False, noise_type=args.noise_type, drop_last=False)
+    train_batches = data.get_loaders(args.dataset, args.data_dir, n_train, args.batch_size,
+        split='train', val_indices=val_indices, shuffle=True, data_augm=train_data_augm, p_label_noise=args.p_label_noise, noise_type=args.noise_type, drop_last=True)
+    train_batches_fast = data.get_loaders(args.dataset, args.data_dir, args.n_eval_every_k_iter, args.batch_size,
+        split='train', val_indices=val_indices, shuffle=False, data_augm=False, p_label_noise=args.p_label_noise, noise_type=args.noise_type, drop_last=False)
+    val_batches = data.get_loaders(args.dataset, args.data_dir, n_val, args.batch_size,
+        split='val', val_indices=val_indices, shuffle=True, data_augm=False, p_label_noise=args.p_label_noise, noise_type=args.noise_type, drop_last=False)
+    test_batches = data.get_loaders(args.dataset, args.data_dir, args.n_final_eval, args.batch_size_eval,
+        split='test', shuffle=True, data_augm=False, noise_type=args.noise_type, drop_last=False)
+    test_batches_fast = data.get_loaders(args.dataset, args.data_dir, args.n_eval_every_k_iter, args.batch_size_eval,
+        split='test', shuffle=True, data_augm=False, noise_type=args.noise_type, drop_last=False)
 
     model = models.get_model(args.model, n_cls, args.half_prec, data.shapes_dict[args.dataset], args.model_width,
                              args.activation, droprate=args.droprate).cuda()
