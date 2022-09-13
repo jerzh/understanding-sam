@@ -1,28 +1,40 @@
 import os
+
+from ffcv import fields, transforms
+from ffcv.fields import decoders
+from ffcv.loader import Loader, OrderOption
+from ffcv.writer import DatasetWriter
 import torch
 import torch.utils.data as td
 import numpy as np
-from torchvision import datasets, transforms
+from torchvision import datasets
 from robustbench.data import load_cifar10c
 
 
 class DatasetWithLabelNoise(torch.utils.data.Dataset):
-    def __init__(self, data, split, transform):
+    def __init__(self, data):
         self.data = data
-        self.split = split
-        self.transform = transform
 
     def __getitem__(self, index):
-        x = self.data.data[index]
-        x1 = self.transform(x) if self.transform is not None else x
-        if self.split == 'train':
-            x2 = self.transform(x) if self.transform is not None else x
-        else:  # to save a bit of computations
-            x2 = x1
+        # TODO(jeremy): figure out x1 vs x2
+        x1 = x2 = self.data.data[index]
+
+        # x1 = self.transform(x) if self.transform is not None else x
+        # if self.split == 'train':
+        #     x2 = self.transform(x) if self.transform is not None else x
+        # else:  # to save a bit of computations
+        #     x2 = x1
+
         y = self.data.targets[index]
         y_correct = self.data.targets_correct[index]
         label_noise = self.data.label_noise[index]
-        return x1, x2, y, y_correct, label_noise
+        return {
+            'x1': x1,
+            'x2': x2,
+            'y': y,
+            'y_correct': y_correct,
+            'label_noise': label_noise,
+        }
 
     def __len__(self):
         return len(self.data.targets)
@@ -93,43 +105,114 @@ def asym_label_noise(dataset, label):
         raise ValueError('This dataset does not yet support asymmetric label noise.')
 
 
-def get_loaders(dataset, data_dir, n_ex, batch_size, split, shuffle, data_augm, val_indices=None, p_label_noise=0.0,
+def load_from_ffcv_format(data, dataset_str, split, ffcv_dataset_dir, image_transform_list, num_workers, **kwargs):
+    fname = os.path.join(ffcv_dataset_dir, f'{dataset_str}.beton')
+
+    # if directory doesn't exist, create
+    if not os.path.exists(ffcv_dataset_dir) or not os.path.isdir(ffcv_dataset_dir):
+        print('Creating ffcv directory...')
+        os.makedirs(ffcv_dataset_dir)
+
+    # write if doesn't exist
+    if not os.path.exists(fname) or not os.path.isfile(fname):
+        print('Writing dataset to .beton format...')
+        writer = DatasetWriter(
+            fname=fname,
+            # TODO(jeremy): Generalize this
+            fields={
+                'x1': fields.RGBImageField(),
+                'x2': fields.RGBImageField(),
+                'y': fields.IntField(),
+                'y_correct': fields.IntField(),
+                # TODO(jeremy): This is actually a bool
+                'label_noise': fields.IntField(),
+            },
+            num_workers=num_workers,
+        )
+        writer.from_indexed_dataset(data)
+
+    # create loader
+    print('Creating dataloader...')
+    image_transform_list.insert(0, decoders.RandomResizedCropRGBImageDecoder(output_size=32, scale=(0.8, 1), ratio=(1, 1)))
+    if split == 'train':
+        x2_image_transform_list = image_transform_list
+    else:
+        x2_image_transform_list = []
+    loader = Loader(
+        fname=os.path.join(ffcv_dataset_dir, f'{dataset_str}.beton'),
+        num_workers=num_workers,
+        pipelines={
+            'x1': [
+                *image_transform_list,
+                transforms.ToTensor(),
+            ],
+            'x2': [
+                *x2_image_transform_list,
+                transforms.ToTensor(),
+            ],
+            'y': [
+                decoders.IntDecoder(),
+                transforms.ToTensor(),
+            ],
+            'y_correct': [
+                decoders.IntDecoder(),
+                transforms.ToTensor(),
+            ],
+            'label_noise': [
+                decoders.IntDecoder(),
+                transforms.ToTensor(),
+            ]
+        },
+        **kwargs,
+    )
+    return loader
+
+
+def get_loaders(dataset_str, data_dir, n_ex, batch_size, split, shuffle, data_augm, val_indices=None, p_label_noise=0.0,
                 noise_type='sym', drop_last=False):
     # set this via flag
     dir_ = data_dir
-    dataset_f = datasets_dict[dataset]
+    ffcv_dataset_dir = os.path.join(dir_, 'ffcv')
+
+    dataset_f = datasets_dict[dataset_str]
     batch_size = n_ex if n_ex < batch_size and n_ex != -1 else batch_size
-    num_workers_train, num_workers_val, num_workers_test = 4, 4, 4
 
-    data_augm_transforms = [transforms.RandomCrop(32, padding=4)]
-    if dataset not in ['mnist', 'svhn']:
+    num_workers_map = {
+        'train': 4,
+        'val': 4,
+        'test': 4,
+    }
+    num_workers = num_workers_map[split]
+
+    data_augm_transforms = []
+    if dataset_str not in ['mnist', 'svhn']:
         data_augm_transforms.append(transforms.RandomHorizontalFlip())
-    base_transforms = [transforms.ToPILImage()] if dataset != 'gaussians_binary' else []
-    transform_list = base_transforms + data_augm_transforms if data_augm else base_transforms
-    transform = transforms.Compose(transform_list + [transforms.ToTensor()])
 
-    if dataset == 'cifar10_horse_car':
+    base_transforms = []
+    image_transform_list = base_transforms + data_augm_transforms if data_augm else base_transforms
+
+    if dataset_str == 'cifar10_horse_car':
         cl1, cl2 = 7, 1  # 7=horse, 1=car
-    elif dataset == 'cifar10_dog_cat':
+    elif dataset_str == 'cifar10_dog_cat':
         cl1, cl2 = 5, 3  # 5=dog, 3=cat
     if split in ['train', 'val']:
-        if dataset != 'svhn':
-            data = dataset_f(dir_, train=True, transform=transform, download=True)
+        if dataset_str != 'svhn':
+            data = dataset_f(dir_, train=True, download=True)
         else:
-            data = dataset_f(dir_, split='train', transform=transform, download=True)
+            data = dataset_f(dir_, split='train', download=True)
             data.data = data.data.transpose([0, 2, 3, 1])
             data.targets = data.labels
         data.targets = np.array(data.targets)
         n_cls = max(data.targets) + 1
 
-        if dataset in ['cifar10_horse_car', 'cifar10_dog_cat']:
+        if dataset_str in ['cifar10_horse_car', 'cifar10_dog_cat']:
             data.targets = np.array(data.targets)
             idx = (data.targets == cl1) + (data.targets == cl2)
             data.data, data.targets = data.data[idx], data.targets[idx]
             data.targets[data.targets == cl1], data.targets[data.targets == cl2] = 0, 1
             n_cls = 2
         n_ex = len(data.targets) if n_ex == -1 else n_ex
-        if '_gs' in dataset:
+        if '_gs' in dataset_str:
             data.data = data.data.mean(3).astype(np.uint8)
 
         if val_indices is not None:
@@ -161,17 +244,15 @@ def get_loaders(dataset, data_dir, n_ex, batch_size, split, shuffle, data_augm, 
                     lst_classes.remove(cls_int)
                     data.targets[index] = np.random.choice(lst_classes)
                 else:
-                    data.targets[index] = asym_label_noise(dataset, data.targets[index])
+                    data.targets[index] = asym_label_noise(dataset_str, data.targets[index])
             data.label_noise[indices] = True
-        print(data.data.shape)
-        data = DatasetWithLabelNoise(data, split, transform if dataset != 'gaussians_binary' else None)
-        # TODO(jeremy): Adapt to FFCV
-        loader = torch.utils.data.DataLoader(
-            dataset=data, batch_size=batch_size, shuffle=shuffle, pin_memory=True,
-            num_workers=num_workers_train if split == 'train' else num_workers_val, drop_last=drop_last)
+        data = DatasetWithLabelNoise(data)
+
+        # don't write if already exists
+        loader = load_from_ffcv_format(data, dataset_str, split, ffcv_dataset_dir, image_transform_list, num_workers=num_workers, batch_size=batch_size, os_cache=False, order=OrderOption.QUASI_RANDOM, drop_last=drop_last)
 
     elif split == 'test':
-        if dataset != 'svhn':
+        if dataset_str != 'svhn':
             data = dataset_f(dir_, train=False, transform=transform, download=True)
         else:
             data = dataset_f(dir_, split='test', transform=transform, download=True)
@@ -179,22 +260,22 @@ def get_loaders(dataset, data_dir, n_ex, batch_size, split, shuffle, data_augm, 
             data.targets = data.labels
         n_ex = len(data) if n_ex == -1 else n_ex
 
-        if dataset in ['cifar10_horse_car', 'cifar10_dog_cat']:
+        if dataset_str in ['cifar10_horse_car', 'cifar10_dog_cat']:
             data.targets = np.array(data.targets)
             idx = (data.targets == cl1) + (data.targets == cl2)
             data.data, data.targets = data.data[idx], data.targets[idx]
             data.targets[data.targets == cl1], data.targets[data.targets == cl2] = 0, 1
             data.targets = list(data.targets)  # to reduce memory consumption
-        if '_gs' in dataset:
+        if '_gs' in dataset_str:
             data.data = data.data.mean(3).astype(np.uint8)
         data.data, data.targets = data.data[:n_ex], data.targets[:n_ex]
         data.targets_correct = data.targets.copy()
 
-        data.label_noise = np.zeros(n_ex)
-        data = DatasetWithLabelNoise(data, split, transform if dataset != 'gaussians_binary' else None)
-        # TODO(jeremy): Adapt to FFCV
-        loader = torch.utils.data.DataLoader(dataset=data, batch_size=batch_size, shuffle=shuffle, pin_memory=True,
-                                             num_workers=num_workers_test, drop_last=drop_last)
+        data.label_noise = np.zeros(n_ex, dtype=bool)
+        data = DatasetWithLabelNoise(data)
+
+        # don't write if already exists
+        loader = load_from_ffcv_format(data, dataset_str, split, ffcv_dataset_dir, image_transform_list, num_workers=num_workers, batch_size=batch_size, os_cache=False, order=OrderOption.QUASI_RANDOM, drop_last=drop_last)
 
     else:
         raise ValueError('wrong split')

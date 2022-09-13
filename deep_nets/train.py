@@ -1,18 +1,21 @@
 import argparse
+import copy
+import logging
 import os
 import time
+from collections import defaultdict
+from datetime import datetime
+
 import numpy as np
 import torch
 import torch.nn.functional as F
-import copy
+
+import data
+import losses
+import models
 import utils
 import utils_eval
 import utils_train
-import data
-import models
-import losses
-from collections import defaultdict
-from datetime import datetime
 from models import forward_pass_rlat
 from sam import SAM, perturb_weights_sam
 
@@ -106,6 +109,7 @@ def get_args():
 
 
 def main():
+    logging.basicConfig(level=logging.WARNING)
     args = get_args()
     assert args.model_width != -1, 'args.model_width has to be always specified (e.g., 64 for resnet18, 10 for wrn28)'
     if args.activation == 'softplus':  # only implemented for resnet18 currently
